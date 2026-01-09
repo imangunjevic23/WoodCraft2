@@ -8,12 +8,10 @@ import javafx.scene.layout.Pane;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 import javafx.scene.shape.Line;
-import javafx.scene.shape.Polygon;
 import javafx.scene.shape.StrokeLineCap;
 import unze.ptf.woodcraft.woodcraft.model.Edge;
 import unze.ptf.woodcraft.woodcraft.model.Guide;
 import unze.ptf.woodcraft.woodcraft.model.NodePoint;
-import unze.ptf.woodcraft.woodcraft.model.ShapePolygon;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -29,16 +27,14 @@ public class CanvasPane extends Pane {
         CONNECT_NODES
     }
 
-    private final Group guideLayer = new Group();
-    private final Group shapeLayer = new Group();
     private final Group edgeLayer = new Group();
+    private final Group guideLayer = new Group();
     private final Group nodeLayer = new Group();
 
     private final Map<Integer, Circle> nodeViews = new HashMap<>();
     private final List<NodePoint> nodes = new ArrayList<>();
     private final List<Edge> edges = new ArrayList<>();
     private final List<Guide> guides = new ArrayList<>();
-    private final List<ShapePolygon> shapes = new ArrayList<>();
 
     private double scale = 10.0;
     private Mode mode = Mode.NONE;
@@ -50,7 +46,7 @@ public class CanvasPane extends Pane {
 
     public CanvasPane() {
         setStyle("-fx-background-color: #fdfdfd; -fx-border-color: #d0d0d0;");
-        getChildren().addAll(guideLayer, shapeLayer, edgeLayer, nodeLayer);
+        getChildren().addAll(guideLayer, edgeLayer, nodeLayer);
         widthProperty().addListener((obs, oldVal, newVal) -> redraw());
         heightProperty().addListener((obs, oldVal, newVal) -> redraw());
 
@@ -114,12 +110,6 @@ public class CanvasPane extends Pane {
         redraw();
     }
 
-    public void setShapes(List<ShapePolygon> shapes) {
-        this.shapes.clear();
-        this.shapes.addAll(shapes);
-        redraw();
-    }
-
     public void addNode(NodePoint node) {
         nodes.add(node);
         drawNode(node);
@@ -135,22 +125,13 @@ public class CanvasPane extends Pane {
         drawGuide(guide);
     }
 
-    public void addShape(ShapePolygon shape) {
-        shapes.add(shape);
-        drawShape(shape);
-    }
-
     private void redraw() {
         edgeLayer.getChildren().clear();
         nodeLayer.getChildren().clear();
         guideLayer.getChildren().clear();
-        shapeLayer.getChildren().clear();
         nodeViews.clear();
         for (Guide guide : guides) {
             drawGuide(guide);
-        }
-        for (ShapePolygon shape : shapes) {
-            drawShape(shape);
         }
         for (Edge edge : edges) {
             drawEdge(edge);
@@ -200,20 +181,6 @@ public class CanvasPane extends Pane {
         line.setStrokeWidth(2);
         line.setStrokeLineCap(StrokeLineCap.ROUND);
         edgeLayer.getChildren().add(line);
-    }
-
-    private void drawShape(ShapePolygon shape) {
-        if (shape.getNodes().size() < 3) {
-            return;
-        }
-        Polygon polygon = new Polygon();
-        for (NodePoint node : shape.getNodes()) {
-            polygon.getPoints().addAll(node.getXCm() * scale, node.getYCm() * scale);
-        }
-        polygon.setFill(Color.rgb(100, 180, 220, 0.18));
-        polygon.setStroke(Color.DARKSLATEBLUE);
-        polygon.setStrokeWidth(2);
-        shapeLayer.getChildren().add(polygon);
     }
 
     private void drawGuide(Guide guide) {
