@@ -35,7 +35,7 @@ public class GeometryService {
     public CycleResult detectCycleForEdge(List<Edge> existingEdges, int startNodeId, int endNodeId) {
         Map<Integer, List<Integer>> adjacency = buildAdjacency(existingEdges);
         List<Integer> path = findPath(adjacency, startNodeId, endNodeId);
-        if (path.isEmpty()) {
+        if (path.size() < 3) {
             return new CycleResult(false, List.of());
         }
         return new CycleResult(true, path);
