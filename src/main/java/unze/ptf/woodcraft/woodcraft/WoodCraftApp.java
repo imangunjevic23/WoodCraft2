@@ -1,6 +1,7 @@
 package unze.ptf.woodcraft.woodcraft;
 
 import javafx.application.Application;
+import javafx.scene.image.Image;
 import javafx.stage.Stage;
 import unze.ptf.woodcraft.woodcraft.dao.DocumentDao;
 import unze.ptf.woodcraft.woodcraft.dao.DimensionDao;
@@ -22,6 +23,7 @@ public class WoodCraftApp extends Application {
     @Override
     public void start(Stage stage) {
         DatabaseInitializer.initialize();
+        setStageIcon(stage);
 
         UserDao userDao = new UserDao();
         MaterialDao materialDao = new MaterialDao();
@@ -42,5 +44,12 @@ public class WoodCraftApp extends Application {
                 documentDao, dimensionDao, nodeDao, edgeDao, guideDao, shapeDao, manualShapeDao,
                 geometryService, estimationService);
         navigator.showInitialScene();
+    }
+
+    private void setStageIcon(Stage stage) {
+        var iconUrl = getClass().getResource("/images/logo.png");
+        if (iconUrl != null) {
+            stage.getIcons().add(new Image(iconUrl.toExternalForm()));
+        }
     }
 }

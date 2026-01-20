@@ -6,7 +6,9 @@ import javafx.scene.Parent;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ComboBox;
+import javafx.scene.control.ContentDisplay;
 import javafx.scene.control.Label;
+import javafx.scene.control.OverrunStyle;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
 import javafx.scene.control.Menu;
@@ -14,12 +16,14 @@ import javafx.scene.control.MenuBar;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.RadioButton;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
 import javafx.scene.control.ToolBar;
 import javafx.scene.control.ToggleButton;
 import javafx.scene.control.ToggleGroup;
+import javafx.scene.control.Tooltip;
 import javafx.stage.FileChooser;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
@@ -30,9 +34,15 @@ import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
+import javafx.scene.layout.TilePane;
 import javafx.scene.layout.VBox;
+import javafx.geometry.Pos;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Line;
+import javafx.scene.shape.SVGPath;
+import javafx.scene.Group;
 import unze.ptf.woodcraft.woodcraft.dao.DocumentDao;
 import unze.ptf.woodcraft.woodcraft.dao.DimensionDao;
 import unze.ptf.woodcraft.woodcraft.dao.EdgeDao;
@@ -63,6 +73,9 @@ import unze.ptf.woodcraft.woodcraft.session.SessionManager;
 import unze.ptf.woodcraft.woodcraft.util.UnitConverter;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -90,12 +103,32 @@ public class MainView {
     private final EstimationService estimationService;
     private final SceneNavigator navigator;
 
-    private final BorderPane root = new BorderPane();
+    private final StackPane root = new StackPane();
+    private final BorderPane mainLayout = new BorderPane();
     private final CanvasPane canvasPane = new CanvasPane();
     private final RulerPane horizontalRuler = new RulerPane(RulerPane.Orientation.HORIZONTAL);
     private final RulerPane verticalRuler = new RulerPane(RulerPane.Orientation.VERTICAL);
 
-    private final ListView<Material> materialsList = new ListView<>();
+    private static final double MATERIAL_TILE_WIDTH = 80;
+    private static final double MATERIAL_TILE_HEIGHT = 96;
+    private static final double MATERIAL_IMAGE_SIZE = 58;
+    private static final double COMPACT_LIST_CELL_SIZE = 24;
+    private static final int COMPACT_LIST_ROWS = 3;
+    private static final String MATERIAL_TILE_STYLE =
+            "-fx-background-color: white;" +
+            "-fx-border-color: rgba(0,0,0,0.15);" +
+            "-fx-border-radius: 4;" +
+            "-fx-background-radius: 4;" +
+            "-fx-padding: 4;";
+    private static final String MATERIAL_TILE_STYLE_SELECTED =
+            "-fx-background-color: #E7EFE4;" +
+            "-fx-border-color: #6E8F6A;" +
+            "-fx-border-radius: 4;" +
+            "-fx-background-radius: 4;" +
+            "-fx-padding: 4;";
+
+    private final TilePane materialsGrid = new TilePane();
+    private final ScrollPane materialsScroll = new ScrollPane(materialsGrid);
     private final ComboBox<Material> defaultMaterial = new ComboBox<>();
     private final ListView<String> summaryList = new ListView<>();
     private final ListView<String> cutList = new ListView<>();
@@ -123,6 +156,8 @@ public class MainView {
     private double currentWastePercent = 10.0;
     private VBox sidebar;
     private boolean sidebarVisible = true;
+    private Material selectedMaterial;
+    private VBox selectedMaterialTile;
 
         
 
@@ -173,8 +208,8 @@ public class MainView {
         MenuBar menuBar = buildMenu();
         ToolBar toolBar = buildToolBar();
         VBox top = new VBox(menuBar, toolBar);
-        root.setTop(top);
-        root.setStyle(
+        mainLayout.setTop(top);
+        mainLayout.setStyle(
     "-fx-background-color: linear-gradient(to bottom right, #F3F0E8, #FFFFFF);" 
 );
 
@@ -186,9 +221,19 @@ public class MainView {
         canvasRegion.setLeft(verticalRuler);
         canvasRegion.setCenter(canvasPane);
 
-        root.setCenter(canvasRegion);
         sidebar = buildSidebar();
-        root.setRight(sidebar);
+        VBox sidebarContainer = new VBox(sidebar);
+        sidebarContainer.setAlignment(Pos.TOP_RIGHT);
+        sidebarContainer.setFillWidth(false);
+        sidebarContainer.setPickOnBounds(false);
+        sidebarContainer.setMaxWidth(Region.USE_PREF_SIZE);
+        sidebarContainer.setMaxHeight(Region.USE_PREF_SIZE);
+        Group sidebarOverlay = new Group(sidebarContainer);
+        sidebarOverlay.translateYProperty().bind(menuBar.heightProperty());
+        mainLayout.setCenter(canvasRegion);
+        root.getChildren().setAll(mainLayout, sidebarOverlay);
+        StackPane.setAlignment(sidebarOverlay, Pos.TOP_RIGHT);
+        updateSidebarVisibility();
 
 
         canvasPane.setOnCanvasClicked(this::handleCanvasClick);
@@ -206,6 +251,7 @@ public class MainView {
         canvasPane.setOnDimensionsMoved(this::handleDimensionsMoved);
         canvasPane.setOnManualShapesMoved(this::handleManualShapesMoved);
         canvasPane.setOnSliceLine(this::handleSliceLine);
+        canvasPane.setOnRectangleCreate(this::handleRectangleCreate);
         canvasPane.addEventFilter(ScrollEvent.SCROLL, this::handleZoomScroll);
         setupGuideDragging();
         root.addEventFilter(KeyEvent.KEY_PRESSED, this::handleKeyPressed);
@@ -256,51 +302,47 @@ public class MainView {
    private ToolBar buildToolBar() {
     ToggleGroup tools = new ToggleGroup();
 
-    ToggleButton selectTool = new ToggleButton("Odabir");
-    selectTool.setToggleGroup(tools);
-    selectTool.setOnAction(event -> setTool(CanvasPane.Mode.SELECT));
+    ToggleButton selectTool = createIconToolButton("Odabir", "arrow_selector_tool.svg",
+            tools, CanvasPane.Mode.SELECT);
 
-    ToggleButton drawShape = new ToggleButton("Crtaj oblik");
-    drawShape.setToggleGroup(tools);
+    ToggleButton drawShape = createIconToolButton("Crtaj oblik", "draw.svg",
+            tools, CanvasPane.Mode.DRAW_SHAPE);
     drawShape.setSelected(true);
-    drawShape.setOnAction(event -> setTool(CanvasPane.Mode.DRAW_SHAPE));
 
-    ToggleButton moveNode = new ToggleButton("Pomakni cvor");
-    moveNode.setToggleGroup(tools);
-    moveNode.setOnAction(event -> setTool(CanvasPane.Mode.MOVE_NODE));
+    ToggleButton drawRect = createIconToolButton("Pravougaonik", "rectangle.svg",
+            tools, CanvasPane.Mode.DRAW_RECT);
 
-    ToggleButton deleteNode = new ToggleButton("Brisi cvorove");
-    deleteNode.setToggleGroup(tools);
-    deleteNode.setOnAction(event -> setTool(CanvasPane.Mode.DELETE_NODE));
+    ToggleButton moveNode = createIconToolButton("Pomakni cvor", "arrows_left_right_circle.svg",
+            tools, CanvasPane.Mode.MOVE_NODE);
 
-    ToggleButton dimensionTool = new ToggleButton("Kote");
-    dimensionTool.setToggleGroup(tools);
-    dimensionTool.setOnAction(event -> setTool(CanvasPane.Mode.DIMENSION));
+    ToggleButton deleteNode = createIconToolButton("Obrisi cvor", "cancel.svg",
+            tools, CanvasPane.Mode.DELETE_NODE);
 
-    ToggleButton sliceTool = new ToggleButton("Rez");
-    sliceTool.setToggleGroup(tools);
-    sliceTool.setOnAction(event -> setTool(CanvasPane.Mode.SLICE));
+    ToggleButton dimensionTool = createIconToolButton("Dodaj kotu", "grid_on.svg",
+            tools, CanvasPane.Mode.DIMENSION);
 
-    ToggleButton deleteDimension = new ToggleButton("Brisi kote");
-    deleteDimension.setToggleGroup(tools);
-    deleteDimension.setOnAction(event -> setTool(CanvasPane.Mode.DELETE_DIMENSION));
+    ToggleButton deleteDimension = createIconToolButton("Obrisi kotu", "grid_off.svg",
+            tools, CanvasPane.Mode.DELETE_DIMENSION);
 
-    ToggleButton deleteGuide = new ToggleButton("Brisi vodilice");
-    deleteGuide.setToggleGroup(tools);
-    deleteGuide.setOnAction(event -> setTool(CanvasPane.Mode.DELETE_GUIDE));
+    ToggleButton sliceTool = createIconToolButton("Rez", "carpenter.svg",
+            tools, CanvasPane.Mode.SLICE);
+
+    ToggleButton deleteGuide = createIconToolButton("Brisi vodilice", "signal_cellular_nodata.svg",
+            tools, CanvasPane.Mode.DELETE_GUIDE);
 
     hookToolToggle(selectTool);
     hookToolToggle(drawShape);
+    hookToolToggle(drawRect);
     hookToolToggle(moveNode);
     hookToolToggle(deleteNode);
     hookToolToggle(dimensionTool);
-    hookToolToggle(sliceTool);
     hookToolToggle(deleteDimension);
+    hookToolToggle(sliceTool);
     hookToolToggle(deleteGuide);
 
     ToolBar bar = new ToolBar(
-            selectTool, drawShape, moveNode, dimensionTool, sliceTool,
-            deleteNode, deleteDimension, deleteGuide
+            selectTool, drawShape, drawRect, moveNode, deleteNode, dimensionTool,
+            deleteDimension, sliceTool, deleteGuide
     );
 
     bar.setStyle(
@@ -313,47 +355,127 @@ public class MainView {
     return bar;
 }
 
+    private ToggleButton createIconToolButton(String tooltipText, String iconFile,
+                                              ToggleGroup group, CanvasPane.Mode mode) {
+        ToggleButton button = new ToggleButton();
+        button.setToggleGroup(group);
+        button.setGraphic(loadSvgIcon("/icons/" + iconFile, 24));
+        button.setContentDisplay(ContentDisplay.GRAPHIC_ONLY);
+        button.setAlignment(Pos.CENTER);
+        button.setGraphicTextGap(0);
+        button.setTooltip(new Tooltip(tooltipText));
+        button.setAccessibleText(tooltipText);
+        button.setOnAction(event -> setTool(mode));
+        return button;
+    }
+
+    private Node loadSvgIcon(String resourcePath, double size) {
+        String svg = readResourceAsString(resourcePath);
+        if (svg == null) {
+            return new Label("?");
+        }
+        String pathData = extractSvgAttribute(svg, "d");
+        if (pathData == null) {
+            return new Label("?");
+        }
+        double minX = 0;
+        double minY = 0;
+        double width = 24;
+        double height = 24;
+        String viewBox = extractSvgAttribute(svg, "viewBox");
+        if (viewBox != null) {
+            String[] parts = viewBox.trim().split("\\s+");
+            if (parts.length == 4) {
+                try {
+                    minX = Double.parseDouble(parts[0]);
+                    minY = Double.parseDouble(parts[1]);
+                    width = Double.parseDouble(parts[2]);
+                    height = Double.parseDouble(parts[3]);
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        double maxDim = Math.max(width, height);
+        double scale = maxDim > 0 ? size / maxDim : 1.0;
+        SVGPath path = new SVGPath();
+        path.setContent(pathData);
+        path.setScaleX(scale);
+        path.setScaleY(scale);
+        path.setTranslateX(-minX * scale);
+        path.setTranslateY(-minY * scale);
+        path.setFill(Color.web("#2C2C2C"));
+        path.setSmooth(true);
+        return new Group(path);
+    }
+
+    private String readResourceAsString(String resourcePath) {
+        try (InputStream stream = getClass().getResourceAsStream(resourcePath)) {
+            if (stream == null) {
+                return null;
+            }
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private String extractSvgAttribute(String svg, String attribute) {
+        String needle = attribute + "=\"";
+        int start = svg.indexOf(needle);
+        if (start < 0) {
+            return null;
+        }
+        int valueStart = start + needle.length();
+        int end = svg.indexOf('"', valueStart);
+        if (end < 0) {
+            return null;
+        }
+        return svg.substring(valueStart, end);
+    }
+
     private VBox buildSidebar() {
-        VBox sidebar = new VBox(10);
-        sidebar.setPadding(new Insets(10));
+        VBox sidebar = new VBox();
         sidebar.setPrefWidth(320);
         sidebar.setMinWidth(320);
         sidebar.setMaxWidth(320);
         sidebar.setStyle("-fx-background-color: #f5f5f5;");
 
+        VBox sidebarContent = new VBox(10);
+        sidebarContent.setPadding(new Insets(10));
+        sidebarContent.setMinHeight(Region.USE_PREF_SIZE);
+
+        ScrollPane sidebarScroll = new ScrollPane(sidebarContent);
+        sidebarScroll.setFitToWidth(true);
+        sidebarScroll.setFitToHeight(true);
+        sidebarScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        sidebarScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        sidebarScroll.setStyle("-fx-background-color: transparent;");
+
+        sidebar.getChildren().add(sidebarScroll);
+        VBox.setVgrow(sidebarScroll, Priority.ALWAYS);
+
         Label materialsLabel = new Label("Materijali");
         materialsLabel.setStyle("-fx-font-size: 14px; -fx-font-weight: bold;");
 
-        materialsList.setCellFactory(listView -> new ListCell<>() {
-            private final ImageView thumbnail = new ImageView();
+        materialsGrid.setHgap(8);
+        materialsGrid.setVgap(8);
+        materialsGrid.setPrefColumns(3);
+        materialsGrid.setPrefTileWidth(MATERIAL_TILE_WIDTH);
+        materialsGrid.setPrefTileHeight(Region.USE_COMPUTED_SIZE);
+        materialsGrid.setPadding(new Insets(4));
+        materialsGrid.setTileAlignment(Pos.TOP_CENTER);
 
-            {
-                thumbnail.setFitWidth(32);
-                thumbnail.setFitHeight(32);
-                thumbnail.setPreserveRatio(true);
-            }
-
-            @Override
-            protected void updateItem(Material item, boolean empty) {
-                super.updateItem(item, empty);
-                if (empty || item == null) {
-                    setText(null);
-                    setGraphic(null);
-                    return;
-                }
-                setText(item.getName() + " (" + materialTypeLabel(item.getType()) + ")");
-                String imagePath = item.getImagePath();
-                if (imagePath != null && !imagePath.isBlank()) {
-                    File file = new File(imagePath);
-                    if (file.exists()) {
-                        thumbnail.setImage(new Image(file.toURI().toString(), 32, 32, true, true));
-                        setGraphic(thumbnail);
-                        return;
-                    }
-                }
-                setGraphic(null);
-            }
-        });
+        materialsScroll.setFitToWidth(true);
+        materialsScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        materialsScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        materialsScroll.setStyle(
+                "-fx-background-color: white;" +
+                "-fx-border-color: rgba(0,0,0,0.25);" +
+                "-fx-border-radius: 2;" +
+                "-fx-background-radius: 2;"
+        );
+        materialsScroll.setMinHeight(MATERIAL_TILE_HEIGHT + 16);
+        materialsScroll.setPrefViewportHeight(MATERIAL_TILE_HEIGHT + 16);
 
         Button addMaterial = new Button("Dodaj materijal");
         addMaterial.setOnAction(event -> {
@@ -366,7 +488,7 @@ public class MainView {
         });
         Button editMaterial = new Button("Uredi materijal");
         editMaterial.setOnAction(event -> {
-            Material selected = materialsList.getSelectionModel().getSelectedItem();
+            Material selected = selectedMaterial;
             if (selected == null) {
                 return;
             }
@@ -377,6 +499,8 @@ public class MainView {
                 selectDefaultMaterialById(material.getId());
             });
         });
+        HBox materialActions = new HBox(8, addMaterial, editMaterial);
+        materialActions.setAlignment(Pos.CENTER_LEFT);
 
         Label defaultLabel = new Label("Zadani materijal za oblike");
         defaultMaterial.setOnAction(event -> recomputeShapes());
@@ -398,13 +522,18 @@ public class MainView {
         Label summaryLabel = new Label("Sazetak");
         summaryLabel.setStyle("-fx-font-size: 14px; -fx-font-weight: bold;");
 
-        VBox summaryBox = new VBox(6, summaryList, totalCostLabel);
-        VBox.setVgrow(summaryList, Priority.ALWAYS);
+        Region summarySpacer = new Region();
+        HBox.setHgrow(summarySpacer, Priority.ALWAYS);
+        HBox summaryHeader = new HBox(8, summaryLabel, summarySpacer, totalCostLabel);
+        summaryHeader.setAlignment(Pos.CENTER_LEFT);
+
+        VBox summaryBox = new VBox(6, summaryList);
+        configureCompactList(summaryList);
 
         Label cutListLabel = new Label("Lista rezova");
         cutListLabel.setStyle("-fx-font-size: 14px; -fx-font-weight: bold;");
         VBox cutBox = new VBox(6, cutList);
-        VBox.setVgrow(cutList, Priority.ALWAYS);
+        configureCompactList(cutList);
 
         Label sheetLabel = new Label("Plan ploca");
         sheetLabel.setStyle("-fx-font-size: 14px; -fx-font-weight: bold;");
@@ -444,20 +573,17 @@ public class MainView {
         VBox plankAutoBox = new VBox(6, plankModeRow, plankCountLabel, plankCountSlider, plankWidthRow,
                 plankAngleLabel, plankAngleSlider, plankWidthLabel, plankWasteLabel, plankCoverageLabel, plankHintLabel);
         sheetBox.getChildren().addAll(plankAutoBox, sheetList);
-        VBox.setVgrow(sheetList, Priority.ALWAYS);
+        configureCompactList(sheetList);
 
         Label selectionLabel = new Label("Odabir");
         selectionLabel.setStyle("-fx-font-size: 14px; -fx-font-weight: bold;");
         VBox selectionBox = new VBox(4, selectedShapeLabel, selectedShapeCostLabel);
 
-        sidebar.getChildren().addAll(materialsLabel, materialsList, addMaterial, editMaterial, new Separator(),
-                defaultLabel, defaultMaterial, new Separator(), summaryLabel, summaryBox,
+        sidebarContent.getChildren().addAll(materialsLabel, materialsScroll, materialActions, new Separator(),
+                defaultLabel, defaultMaterial, new Separator(), summaryHeader, summaryBox,
                 new Separator(), cutListLabel, cutBox, new Separator(), sheetLabel, sheetBox,
                 new Separator(), selectionLabel, selectionBox);
-        VBox.setVgrow(materialsList, Priority.ALWAYS);
-        VBox.setVgrow(summaryBox, Priority.ALWAYS);
-        VBox.setVgrow(cutBox, Priority.ALWAYS);
-        VBox.setVgrow(sheetBox, Priority.ALWAYS);
+        VBox.setVgrow(materialsScroll, Priority.ALWAYS);
         return sidebar;
     }
 
@@ -505,11 +631,78 @@ public class MainView {
 
     private void refreshMaterials() {
         List<Material> materials = materialDao.findByUser(sessionManager.getCurrentUser().getId());
-        materialsList.getItems().setAll(materials);
+        renderMaterials(materials);
         defaultMaterial.getItems().setAll(materials);
         if (!materials.isEmpty() && defaultMaterial.getSelectionModel().isEmpty()) {
             defaultMaterial.getSelectionModel().select(0);
         }
+    }
+
+    private void configureCompactList(ListView<?> listView) {
+        listView.setFixedCellSize(COMPACT_LIST_CELL_SIZE);
+        double height = COMPACT_LIST_CELL_SIZE * COMPACT_LIST_ROWS + 6;
+        listView.setPrefHeight(height);
+        listView.setMinHeight(height);
+        listView.setMaxHeight(height);
+    }
+
+    private void renderMaterials(List<Material> materials) {
+        materialsGrid.getChildren().clear();
+        Material previousSelection = selectedMaterial;
+        selectedMaterial = null;
+        selectedMaterialTile = null;
+        if (materials == null) {
+            return;
+        }
+        for (Material material : materials) {
+            VBox tile = createMaterialTile(material);
+            materialsGrid.getChildren().add(tile);
+            if (previousSelection != null && material.getId() == previousSelection.getId()) {
+                selectMaterialTile(material, tile);
+            }
+        }
+    }
+
+    private VBox createMaterialTile(Material material) {
+        ImageView thumbnail = new ImageView();
+        thumbnail.setFitWidth(MATERIAL_IMAGE_SIZE);
+        thumbnail.setFitHeight(MATERIAL_IMAGE_SIZE);
+        thumbnail.setPreserveRatio(true);
+        thumbnail.setSmooth(true);
+
+        String imagePath = material.getImagePath();
+        if (imagePath != null && !imagePath.isBlank()) {
+            File file = new File(imagePath);
+            if (file.exists()) {
+                thumbnail.setImage(new Image(file.toURI().toString(), MATERIAL_IMAGE_SIZE, MATERIAL_IMAGE_SIZE, true, true));
+            }
+        }
+
+        Label nameLabel = new Label(material.getName());
+        nameLabel.setWrapText(false);
+        nameLabel.setMaxWidth(MATERIAL_TILE_WIDTH - 8);
+        nameLabel.setTextOverrun(OverrunStyle.ELLIPSIS);
+        nameLabel.setTooltip(new Tooltip(material.getName()));
+        nameLabel.setAlignment(Pos.CENTER);
+        nameLabel.setStyle("-fx-font-size: 11px; -fx-text-alignment: center;");
+
+        VBox tile = new VBox(4, thumbnail, nameLabel);
+        tile.setAlignment(Pos.TOP_CENTER);
+        tile.setPrefWidth(MATERIAL_TILE_WIDTH);
+        tile.setMinWidth(MATERIAL_TILE_WIDTH);
+        tile.setMaxWidth(MATERIAL_TILE_WIDTH);
+        tile.setStyle(MATERIAL_TILE_STYLE);
+        tile.setOnMouseClicked(event -> selectMaterialTile(material, tile));
+        return tile;
+    }
+
+    private void selectMaterialTile(Material material, VBox tile) {
+        if (selectedMaterialTile != null) {
+            selectedMaterialTile.setStyle(MATERIAL_TILE_STYLE);
+        }
+        selectedMaterial = material;
+        selectedMaterialTile = tile;
+        tile.setStyle(MATERIAL_TILE_STYLE_SELECTED);
     }
 
     private void selectDefaultMaterialById(int materialId) {
@@ -599,6 +792,36 @@ public class MainView {
         pushHistory();
         var edge = edgeDao.create(currentDocument.getId(), startNodeId, endNodeId);
         canvasPane.addEdge(edge);
+        recomputeShapes();
+    }
+
+    private void handleRectangleCreate(Point2D startCm, Point2D endCm) {
+        if (currentDocument == null) {
+            return;
+        }
+        Point2D start = clampToCanvas(applyGuideSnapping(startCm));
+        Point2D end = clampToCanvas(applyGuideSnapping(endCm));
+        double minX = Math.min(start.getX(), end.getX());
+        double maxX = Math.max(start.getX(), end.getX());
+        double minY = Math.min(start.getY(), end.getY());
+        double maxY = Math.max(start.getY(), end.getY());
+        if (Math.abs(maxX - minX) < 0.1 || Math.abs(maxY - minY) < 0.1) {
+            return;
+        }
+        pushHistory();
+        NodePoint n1 = nodeDao.create(currentDocument.getId(), minX, minY);
+        NodePoint n2 = nodeDao.create(currentDocument.getId(), maxX, minY);
+        NodePoint n3 = nodeDao.create(currentDocument.getId(), maxX, maxY);
+        NodePoint n4 = nodeDao.create(currentDocument.getId(), minX, maxY);
+        canvasPane.addNode(n1);
+        canvasPane.addNode(n2);
+        canvasPane.addNode(n3);
+        canvasPane.addNode(n4);
+        canvasPane.addEdge(edgeDao.create(currentDocument.getId(), n1.getId(), n2.getId()));
+        canvasPane.addEdge(edgeDao.create(currentDocument.getId(), n2.getId(), n3.getId()));
+        canvasPane.addEdge(edgeDao.create(currentDocument.getId(), n3.getId(), n4.getId()));
+        canvasPane.addEdge(edgeDao.create(currentDocument.getId(), n4.getId(), n1.getId()));
+        lastDrawNodeId = null;
         recomputeShapes();
     }
 
@@ -1966,8 +2189,9 @@ public class MainView {
 
     b.selectedProperty().addListener((obs, o, n) -> styleToolToggle(b, b.isHover()));
     
-    b.setPrefHeight(32);
-    b.setMinHeight(32);
+    b.setPrefSize(40, 40);
+    b.setMinSize(40, 40);
+    b.setMaxSize(40, 40);
     
 }  
    
@@ -1989,6 +2213,7 @@ public class MainView {
         text = "#2C2C2C";
     }
 
+    updateToolIconColor(b, text);
     b.setStyle(
             "-fx-background-color: " + bg + ";" +
             "-fx-text-fill: " + text + ";" +
@@ -1998,9 +2223,33 @@ public class MainView {
             "-fx-border-radius: 4;" +       
             "-fx-border-color: " + border + ";" +
             "-fx-border-width: 1;" +
-            "-fx-padding: 4 7 4 7;" +      
+            "-fx-padding: 3;" +
             "-fx-cursor: hand;"
     );
+}
+private void updateToolIconColor(ToggleButton b, String color) {
+    SVGPath path = findSvgPath(b.getGraphic());
+    if (path != null) {
+        path.setFill(Color.web(color));
+    }
+}
+
+private SVGPath findSvgPath(Node node) {
+    if (node == null) {
+        return null;
+    }
+    if (node instanceof SVGPath path) {
+        return path;
+    }
+    if (node instanceof Parent parent) {
+        for (Node child : parent.getChildrenUnmodifiable()) {
+            SVGPath found = findSvgPath(child);
+            if (found != null) {
+                return found;
+            }
+        }
+    }
+    return null;
 }
 private void showHelpDialog() {
     Alert alert = new Alert(Alert.AlertType.INFORMATION);
@@ -2026,12 +2275,15 @@ private void showHelpDialog() {
 }
 private void toggleSidebar() {
     sidebarVisible = !sidebarVisible;
+    updateSidebarVisibility();
+}
 
-    if (sidebarVisible) {
-        root.setRight(sidebar);
-    } else {
-        root.setRight(null);
+private void updateSidebarVisibility() {
+    if (sidebar == null) {
+        return;
     }
+    sidebar.setManaged(sidebarVisible);
+    sidebar.setVisible(sidebarVisible);
 }
 
 

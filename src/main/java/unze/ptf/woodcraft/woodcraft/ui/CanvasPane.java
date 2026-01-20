@@ -34,6 +34,7 @@ import java.util.function.IntConsumer;
 public class CanvasPane extends Pane {
     public enum Mode {
         DRAW_SHAPE,
+        DRAW_RECT,
         SELECT,
         MOVE_NODE,
         DELETE_NODE,
@@ -67,6 +68,7 @@ public class CanvasPane extends Pane {
     private final Group guideLayer = new Group();
     private final Group nodeLayer = new Group();
     private final Rectangle selectionRect = new Rectangle();
+    private final Rectangle rectPreview = new Rectangle();
     private final Rectangle clipRect = new Rectangle();
     private final Rectangle boardRect = new Rectangle();
     private final Rectangle viewportClip = new Rectangle();
@@ -96,6 +98,7 @@ public class CanvasPane extends Pane {
     private Consumer<EdgeControlUpdate> onEdgeControlsChanged;
     private Consumer<List<Integer>> onDeleteNodes;
     private Consumer<List<Integer>> onDeleteGuides;
+    private BiConsumer<Point2D, Point2D> onRectangleCreate;
     private Consumer<DimensionDraft> onDimensionCreate;
     private BiConsumer<Integer, Point2D> onDimensionOffsetChanged;
     private Consumer<List<Integer>> onDeleteDimensions;
@@ -138,6 +141,9 @@ public class CanvasPane extends Pane {
     private Point2D sliceStart;
     private Line slicePreview;
     private UnitSystem unitSystem = UnitSystem.CM;
+    private Point2D rectStartCm;
+    private double rectStartX;
+    private double rectStartY;
 
     public CanvasPane() {
         setStyle("-fx-background-color: #fdfdfd; -fx-border-color: #d0d0d0;");
@@ -147,6 +153,12 @@ public class CanvasPane extends Pane {
         selectionRect.setStroke(Color.rgb(60, 120, 200, 0.6));
         selectionRect.getStrokeDashArray().setAll(6.0, 4.0);
         selectionRect.setMouseTransparent(true);
+        rectPreview.setManaged(false);
+        rectPreview.setVisible(false);
+        rectPreview.setFill(Color.rgb(110, 143, 106, 0.15));
+        rectPreview.setStroke(Color.rgb(110, 143, 106, 0.8));
+        rectPreview.getStrokeDashArray().setAll(6.0, 4.0);
+        rectPreview.setMouseTransparent(true);
         viewportClip.widthProperty().bind(widthProperty());
         viewportClip.heightProperty().bind(heightProperty());
         setClip(viewportClip);
@@ -165,7 +177,7 @@ public class CanvasPane extends Pane {
         slicePreview.getStrokeDashArray().setAll(6.0, 4.0);
         slicePreview.setVisible(false);
         sliceLayer.getChildren().add(slicePreview);
-        getChildren().addAll(contentLayer, guideLayer, selectionRect);
+        getChildren().addAll(contentLayer, guideLayer, selectionRect, rectPreview);
         widthProperty().addListener((obs, oldVal, newVal) -> redraw());
         heightProperty().addListener((obs, oldVal, newVal) -> redraw());
 
@@ -188,6 +200,19 @@ public class CanvasPane extends Pane {
                 selectionRect.setWidth(0);
                 selectionRect.setHeight(0);
                 selectionRect.setVisible(true);
+                event.consume();
+                return;
+            }
+            if (event.getButton() == MouseButton.PRIMARY && mode == Mode.DRAW_RECT
+                    && (event.getTarget() == this || event.getTarget() == boardRect)) {
+                rectStartCm = toCm(event.getX(), event.getY());
+                rectStartX = event.getX();
+                rectStartY = event.getY();
+                rectPreview.setX(rectStartX);
+                rectPreview.setY(rectStartY);
+                rectPreview.setWidth(0);
+                rectPreview.setHeight(0);
+                rectPreview.setVisible(true);
                 event.consume();
                 return;
             }
@@ -234,6 +259,16 @@ public class CanvasPane extends Pane {
                 selectionRect.setY(y);
                 selectionRect.setWidth(w);
                 selectionRect.setHeight(h);
+                event.consume();
+                return;
+            }
+            if (rectPreview.isVisible() && mode == Mode.DRAW_RECT) {
+                double x = Math.min(rectStartX, event.getX());
+                double y = Math.min(rectStartY, event.getY());
+                rectPreview.setX(x);
+                rectPreview.setY(y);
+                rectPreview.setWidth(Math.abs(event.getX() - rectStartX));
+                rectPreview.setHeight(Math.abs(event.getY() - rectStartY));
                 event.consume();
                 return;
             }
@@ -285,6 +320,16 @@ public class CanvasPane extends Pane {
                 event.consume();
                 return;
             }
+            if (rectPreview.isVisible() && mode == Mode.DRAW_RECT) {
+                rectPreview.setVisible(false);
+                Point2D end = toCm(event.getX(), event.getY());
+                if (rectStartCm != null && onRectangleCreate != null) {
+                    onRectangleCreate.accept(rectStartCm, end);
+                }
+                rectStartCm = null;
+                event.consume();
+                return;
+            }
             if (slicePreview.isVisible() && mode == Mode.SLICE) {
                 slicePreview.setVisible(false);
                 Point2D local = sceneToLocal(event.getSceneX(), event.getSceneY());
@@ -318,6 +363,9 @@ public class CanvasPane extends Pane {
                     onShapeClicked.accept(-1);
                 }
                 event.consume();
+                return;
+            }
+            if (mode == Mode.DRAW_RECT) {
                 return;
             }
             if (onCanvasClicked != null) {
@@ -371,6 +419,10 @@ public class CanvasPane extends Pane {
 
     public void setOnDeleteGuides(Consumer<List<Integer>> handler) {
         this.onDeleteGuides = handler;
+    }
+
+    public void setOnRectangleCreate(BiConsumer<Point2D, Point2D> handler) {
+        this.onRectangleCreate = handler;
     }
 
     public void setOnDimensionCreate(Consumer<DimensionDraft> handler) {
@@ -483,7 +535,7 @@ public class CanvasPane extends Pane {
 
     public void setMode(Mode mode) {
         this.mode = mode;
-        if (mode == Mode.DRAW_SHAPE) {
+        if (mode == Mode.DRAW_SHAPE || mode == Mode.DRAW_RECT) {
             setCursor(Cursor.CROSSHAIR);
         } else if (mode == Mode.DIMENSION) {
             setCursor(Cursor.CROSSHAIR);
@@ -497,6 +549,10 @@ public class CanvasPane extends Pane {
         if (mode != Mode.DELETE_NODE && mode != Mode.DELETE_GUIDE && mode != Mode.DELETE_DIMENSION
                 && mode != Mode.SELECT) {
             selectionRect.setVisible(false);
+        }
+        if (mode != Mode.DRAW_RECT) {
+            rectPreview.setVisible(false);
+            rectStartCm = null;
         }
         if (mode != Mode.DIMENSION) {
             pendingDimensionStart = null;
